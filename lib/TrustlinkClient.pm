@@ -17,7 +17,7 @@ TrustlinkClient - Perl links inserter from trustlink.ru.
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = 'T0.3.4';
 
 
 =head1 SYNOPSIS
@@ -33,9 +33,17 @@ our (
 sub new
 {
 	my $class = shift;
-	my $options = shift;
-	my $this = {
-		'tl_version'           => 'T0.3.4',
+	return bless {
+		'tl_tpath'             => dirname(__FILE__),
+		'_inited'              => undef,
+		'_links_loaded'        => undef,
+		'_options'             => shift() || undef,
+	}, $class;
+}
+
+sub init {
+	my $self    = shift;
+	my %_init = (
 		'tl_verbose'           => 0,
 		'tl_debug'             => 1,
 		'tl_isrobot'           => 0,
@@ -59,193 +67,202 @@ sub new
 		'tl_is_static'         => 0,
 		'tl_tpath'             => dirname(__FILE__),
 		'remote_addr'          => $ENV{REMOTE_ADDR}||'',
-	};
-	bless ($this, $class);
+		'_inited'              => undef,
+		'_links_loaded'        => undef,
+		@_,
+	);
+	foreach my $key ( keys %_init) {
+		$self->{$key} //= delete $_init{$key};
+	}
+	my $options = delete $self->{_options};
 
 	if (ref($options) eq "HASH")
 	{
-		$this->{tl_host} = $options->{host} if($options->{host} ne '');
+		$self->{tl_host} = $options->{host} if($options->{host} ne '');
 	}
 	elsif(ref($options) ne '')
 	{
-		$this->{tl_host} = $options if($options ne '');
+		$self->{tl_host} = $options if($options ne '');
 		$options = {};
 	}
-	$this->{tl_host} = $ENV{HTTP_HOST} if($this->{tl_host} eq '');
+	$self->{tl_host} = $ENV{HTTP_HOST} if($self->{tl_host} eq '');
 
-	$this->{tl_host} =~ s/^www\.//;
-	$this->{tl_host} = lc($this->{tl_host});
+	$self->{tl_host} =~ s/^www\.//;
+	$self->{tl_host} = lc($self->{tl_host});
 	
 
-	$this->{tl_tpath}             = $options->{tpath}   || $this->{tl_tpath};
-	$this->{tl_charset}           = $options->{charset} || $this->{tl_charset};
-	$this->{tl_is_static}         = 1 if $options->{is_static};
-	$this->{tl_multi_site}        = 1 if $options->{multi_site};
-	$this->{tl_verbose}           = 1 if ($options->{verbose} || $this->{tl_links}->{__trustlink_debug__});
-	$this->{tl_force_show_code}   = 1 if ($options->{force_show_code} || $this->{tl_links}->{__trustlink_debug__});
-	$this->{tl_socket_timeout}    = $options->{socket_timeout} if (($options->{socket_timeout} || '') =~ /^\d+$/ && $options->{socket_timeout} > 0);
+	$self->{tl_tpath}             = $options->{tpath}   || $self->{tl_tpath};
+	$self->{tl_charset}           = $options->{charset} || $self->{tl_charset};
+	$self->{tl_is_static}         = 1 if $options->{is_static};
+	$self->{tl_multi_site}        = 1 if $options->{multi_site};
+	$self->{tl_verbose}           = 1 if ($options->{verbose} || $self->{tl_links}->{__trustlink_debug__});
+	$self->{tl_force_show_code}   = 1 if ($options->{force_show_code} || $self->{tl_links}->{__trustlink_debug__});
+	$self->{tl_socket_timeout}    = $options->{socket_timeout} if (($options->{socket_timeout} || '') =~ /^\d+$/ && $options->{socket_timeout} > 0);
 
-	if ($options->{request_uri} ne '') 
+	if ($options->{request_uri}) 
 	{
-		$this->{tl_request_uri} = $options->{request_uri};
+		$self->{tl_request_uri} = $options->{request_uri};
 	}
 	else
 	{
-		if ($this->{tl_is_static})
+		if ($self->{tl_is_static})
 		{
-			$this->{tl_request_uri} = $ENV{REQUEST_URI};
-			$this->{tl_request_uri} =~ s/\?.*$//;
-			$this->{tl_request_uri} =~ s/\/+/\//;
+			$self->{tl_request_uri} = $ENV{REQUEST_URI} || '/';
+			$self->{tl_request_uri} =~ s/\?.*$//;
+			$self->{tl_request_uri} =~ s/\/+/\//;
 		}
 		else
 		{
-			$this->{tl_request_uri} = $ENV{REQUEST_URI};
+			$self->{tl_request_uri} = $ENV{REQUEST_URI} || '/';
 		}
 	}
-	$this->{tl_request_uri} = &rawurldecode($this->{tl_request_uri});
+	$self->{tl_request_uri} = $self->rawurldecode($self->{tl_request_uri});
 
 
 	$TRUSTLINK_USER = $options->{TRUSTLINK_USER};
 	
-	$this->raise_error("Parametr TRUSTLINK_USER is not defined.") if($TRUSTLINK_USER eq '');
+	$self->raise_error("Parametr TRUSTLINK_USER is not defined.") if($TRUSTLINK_USER eq '');
 	
 	if (($ENV{HTTP_TRUSTLINK}||'') eq $TRUSTLINK_USER)
 	{
-		$this->{tl_test}    = 1;
-		$this->{tl_isrobot} = 1;
-		$this->{tl_verbose} = 1;
+		$self->{tl_test}    = 1;
+		$self->{tl_isrobot} = 1;
+		$self->{tl_verbose} = 1;
 	}
+	$self->{_inited} = 1;
 
-	$this->load_links();
-	return $this;
+	return $self;
 }
 
 sub load_links
 {
-	my $this = shift;
+	my $self = shift;
+	$self->{_inited} or $self->init();
 
-	if ($this->{tl_multi_site} == 1)
+	if ($self->{tl_multi_site} == 1)
 	{
-		$this->{tl_links_db_file} = $this->{tl_tpath} . '/trustlink.' . $this->{tl_host} . '.links.db';
+		$self->{tl_links_db_file} = $self->{tl_tpath} . '/trustlink.' . $self->{tl_host} . '.links.db';
 	}
 	else
 	{
-		$this->{tl_links_db_file} = $this->{tl_tpath} . '/trustlink.links.db';
+		$self->{tl_links_db_file} = $self->{tl_tpath} . '/trustlink.links.db';
 	}
 
-	my $_creat = !-f $this->{tl_links_db_file};
-	if (!-f $this->{tl_links_db_file})
+	my $_creat = !-f $self->{tl_links_db_file};
+	if (!-f $self->{tl_links_db_file})
 	{
 		my $SYSOPEN_MODE = O_WRONLY|O_CREAT|O_NONBLOCK|O_NOCTTY;
 
-		sysopen my $fh, $this->{tl_links_db_file} ,$SYSOPEN_MODE or $this->raise_error("Can't create $this->{tl_links_db_file} : $!");
-		close $fh or $this->raise_error("Can't close $this->{tl_links_db_file} : $!");
-		chmod (0666, $this->{tl_links_db_file}) or $this->raise_error("Can't set permission to $this->{tl_links_db_file} : $!");
+		sysopen my $fh, $self->{tl_links_db_file} ,$SYSOPEN_MODE or $self->raise_error("Can't create $self->{tl_links_db_file} : $!");
+		close $fh or $self->raise_error("Can't close $self->{tl_links_db_file} : $!");
+		chmod (0666, $self->{tl_links_db_file}) or $self->raise_error("Can't set permission to $self->{tl_links_db_file} : $!");
 	}
 
-	if (!-w $this->{tl_links_db_file})
+	if (!-w $self->{tl_links_db_file})
 	{
-		$this->raise_error("There is no permissions to write: " . $this->{tl_links_db_file} . "! Set mode to 777 on the folder.");
+		$self->raise_error("There is no permissions to write: " . $self->{tl_links_db_file} . "! Set mode to 777 on the folder.");
 	}
 
 
-	my $sb = stat($this->{tl_links_db_file}) or $this->raise_error("Could not stat file: $this->{tl_links_db_file} ($!)");
+	my $sb = stat($self->{tl_links_db_file}) or $self->raise_error("Could not stat file: $self->{tl_links_db_file} ($!)");
 	my $atime = $sb->atime if($sb);
 	my $mtime = $sb->mtime if($sb);
 	my $size = $sb->size if($sb);
 
 	my $links;
-	my $path = '/' . $TRUSTLINK_USER . '/' . lc( $this->{tl_host} ) . '/' . uc( $this->{tl_charset}).'.text';
+	my $path = '/' . $TRUSTLINK_USER . '/' . lc( $self->{tl_host} ) . '/' . uc( $self->{tl_charset}).'.text';
 
-	if ($mtime < (time()-$this->{tl_cache_lifetime}) || ($mtime < (time()-$this->{tl_cache_reloadtime}) && !$size) || $_creat)
+	if ($mtime < (time()-$self->{tl_cache_lifetime}) || ($mtime < (time()-$self->{tl_cache_reloadtime}) && !$size) || $_creat)
 	{
-		$this->lc_write($this->{tl_links_db_file}, '');
-		$links = $this->fetch_remote_file($this->{tl_server}, $path);
+		$self->lc_write($self->{tl_links_db_file}, '');
+		$links = $self->fetch_remote_file($self->{tl_server}, $path);
 
 		if ($links ne "")
 		{
 			if (substr($links, 0, 12) eq 'FATAL ERROR:')
 			{
-				if($this->{tl_debug}){
-					$this->raise_error($links);
+				if($self->{tl_debug}){
+					$self->raise_error($links);
 				}
 			}
 			else
 			{
-				$this->lc_write($this->{tl_links_db_file}, $links);
+				$self->lc_write($self->{tl_links_db_file}, $links);
 			}
 		}
 	}
 
-	$links = $this->lc_read($this->{tl_links_db_file}, $this->{tl_request_uri});
+	$links = $self->lc_read($self->{tl_links_db_file}, $self->{tl_request_uri});
 
 	my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=gmtime($mtime);
-	$this->{tl_file_change_date} = sprintf("%02d.%02d.%02d %02d:%02d:%02d", $mday, $mon+1, $year+1900, $hour,$min, $sec);
+	$self->{tl_file_change_date} = sprintf("%02d.%02d.%02d %02d:%02d:%02d", $mday, $mon+1, $year+1900, $hour,$min, $sec);
 	($atime, $mtime,  $sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = (); # Очищаем память от данных
 
-	$this->{tl_file_size} = length($links);
+	$self->{tl_file_size} = length($links);
 
 	unless($links)
 	{
-        $this->{tl_links} = {};
-        if ($this->{tl_debug} == 1)
+        $self->{tl_links} = {};
+        if ($self->{tl_debug} == 1)
         {
-        	$this->raise_error("Empty file.");
+        	$self->raise_error("Empty file.");
         }
 	}
 	elsif (ref($links) ne "HASH")
 	{
-		$this->{tl_links} = {};
-		if ($this->{tl_debug} == 1)
+		$self->{tl_links} = {};
+		if ($self->{tl_debug} == 1)
 		{
-			$this->raise_error("Can't readed data from file.");
+			$self->raise_error("Can't readed data from file.");
 		}
     }
     elsif(ref($links) eq "HASH")
     {
-    	$this->{tl_links} = $links;
+    	$self->{tl_links} = $links;
     }
 
-    if ($this->{tl_links}->{__trustlink_delimiter__} ne "")
+    if ($self->{tl_links}->{__trustlink_delimiter__} ne "")
     {
-        $this->{tl_links_delimiter} = $this->{tl_links}->{__trustlink_delimiter__};
+        $self->{tl_links_delimiter} = $self->{tl_links}->{__trustlink_delimiter__};
     }
 
-	if ($this->{tl_test})
+	if ($self->{tl_test})
 	{
-		if (ref($this->{tl_links}->{__test_tl_link__}) eq "HASH")
+		if (ref($self->{tl_links}->{__test_tl_link__}) eq "HASH")
 		{
-			for (my $i=0;$i < $this->{tl_test_count}; $i++)
+			for (my $i=0;$i < $self->{tl_test_count}; $i++)
 			{
-				push @{$this->{tl_links_page}}, $this->{tl_links}->{__test_tl_link__};
+				push @{$self->{tl_links_page}}, $self->{tl_links}->{__test_tl_link__};
 			}
 		}
 	}
 	else
 	{
 		my $tmp = {};
-		foreach my $key (keys %{$this->{tl_links}})
+		foreach my $key (keys %{$self->{tl_links}})
 		{
-			$tmp->{rawurldecode($key)} = $this->{tl_links}->{$key};
+			$tmp->{$self->rawurldecode($key)} = $self->{tl_links}->{$key};
 		}
-		$this->{tl_links} = $tmp;
+		$self->{tl_links} = $tmp;
 		undef($tmp);
 
-		if ($this->{tl_links}->{$this->{tl_request_uri}} ne "")
+		if ($self->{tl_links}->{$self->{tl_request_uri}} ne "")
 		{
-			$this->{tl_links_page} = $this->{tl_links}->{$this->{tl_request_uri}};
+			$self->{tl_links_page} = $self->{tl_links}->{$self->{tl_request_uri}};
 		}
 	}
-	$this->{tl_links_count} = scalar @{$this->{tl_links_page}};
+	$self->{tl_links_count} = scalar @{$self->{tl_links_page}};
+	$self->{_links_loaded} = 1;
 }
 
 sub fetch_remote_file
 {
-	my $this = shift;
+	my $self = shift;
+	$self->{_inited} or $self->init();
 	my ($host, $path) = @_;
 	my $port="80";
 
-	my $user_agent = 'Trustlink Client PERL ' . $this->{tl_version};
+	my $user_agent = "Trustlink Client PERL $VERSION";
 
 	socket(SOCK, PF_INET, SOCK_STREAM, getprotobyname('tcp'));
 	my $paddr = sockaddr_in($port, inet_aton($host));
@@ -262,21 +279,22 @@ sub fetch_remote_file
 		my @page = split("\r\n\r\n", $buff);
 		return $page[1];
 	}
-	$this->raise_error("Can't connect to server: " . $host . $path);
+	$self->raise_error("Can't connect to server: " . $host . $path);
 	return;
 }
 
 sub lc_read
 {
-	my $this = shift;
+	my $self = shift;
+	$self->{_inited} or $self->init();
 	my $filename = shift;
 	my $request_uri = shift;
 
 	my $buffer;
 
-	open(FILE, $filename) or $this->raise_error("Can't get data from the file: $filename ($!)");
+	open(FILE, $filename) or $self->raise_error("Can't get data from the file: $filename ($!)");
 	
-	if(lc($this->{tl_charset}) eq "utf-8")
+	if(lc($self->{tl_charset}) eq "utf-8")
 	{
 		binmode(FILE,':utf8');
 	}
@@ -322,62 +340,65 @@ sub lc_read
 
 sub lc_write
 {
-	my $this = shift;
+	my $self = shift;
+	$self->{_inited} or $self->init();
 	my $filename = shift;
 	my $content = shift;
 	my $hash = shift;
 
 	open(FILE, ">$filename") or die "$!";
-	binmode(FILE);                             
-	print FILE $content  or die "$!";                        
+	binmode(FILE);
+	print FILE $content  or die "$!";
 	close(FILE);
 }
 
 
 sub raise_error
 {
-	my $this = shift;
-	push @{$this->{tl_error}}, shift;
+	my $self = shift;
+	$self->{_inited} or $self->init();
+	push @{$self->{tl_error}}, shift;
 }
 
 sub build_links
 {
-	my $this = shift;
-	my $links = $this->{tl_links_page};
+	my $self = shift;
+	$self->{_links_loaded} or $self->load_links();
+	my $links = $self->{tl_links_page};
 	my $result ='';
 
 
-	if ($this->{tl_links}->{__trustlink_start__} ne '' && ((any{ $_ eq $this->{remote_addr} } @{$this->{tl_links}->{__trustlink_robots__}} ) || $this->{tl_force_show_code}))
+	if ($self->{tl_links}->{__trustlink_start__} ne '' && ((any{ $_ eq $self->{remote_addr} } @{$self->{tl_links}->{__trustlink_robots__}} ) || $self->{tl_force_show_code}))
 	{
-		$result .= $this->{tl_links}->{__trustlink_start__};
+		$result .= $self->{tl_links}->{__trustlink_start__};
 	}
 
-	if ((any{ $_ eq $this->{remote_addr} } @{$this->{tl_links}->{__trustlink_robots__}}) || $this->{tl_verbose})
+	if ((any{ $_ eq $self->{remote_addr} } @{$self->{tl_links}->{__trustlink_robots__}}) || $self->{tl_verbose})
 	{
 		$result .= '<!--REQUEST_URI=' . $ENV{REQUEST_URI} . "-->\n";
 		$result .= "\n<!--\n";
-		$result .= 'L ' . $this->{tl_version} . "\n";
-		$result .= 'REMOTE_ADDR=' . $this->{remote_addr} . "\n";
-		$result .= 'request_uri=' . $this->{tl_request_uri} . "\n";
-		$result .= 'charset=' . $this->{tl_charset} . "\n";
-		$result .= 'is_static=' . $this->{tl_is_static} . "\n";
-		$result .= 'multi_site=' . $this->{tl_multi_site} . "\n";
-		$result .= 'file change date=' . $this->{tl_file_change_date} . "\n";
-		$result .= 'lc_file_size=' . $this->{tl_file_size} . "\n";
-		$result .= 'lc_links_count=' . $this->{tl_links_count} . "\n";
-		$result .= 'left_links_count=' . $this->{tl_links_count} . "\n";
+		$result .= "L $VERSION\n";
+		$result .= 'REMOTE_ADDR=' . $self->{remote_addr} . "\n";
+		$result .= 'request_uri=' . $self->{tl_request_uri} . "\n";
+		$result .= 'charset=' . $self->{tl_charset} . "\n";
+		$result .= 'is_static=' . $self->{tl_is_static} . "\n";
+		$result .= 'multi_site=' . $self->{tl_multi_site} . "\n";
+		$result .= 'file change date=' . $self->{tl_file_change_date} . "\n";
+		$result .= 'lc_file_size=' . $self->{tl_file_size} . "\n";
+		$result .= 'lc_links_count=' . $self->{tl_links_count} . "\n";
+		$result .= 'left_links_count=' . $self->{tl_links_count} . "\n";
 		$result .= '-->';
 	}
 
-	my $tpl_filename = $this->{tl_tpath}.'/'.$this->{tl_template}.".tpl.html";
-	my $tpl = $this->lc_read($tpl_filename);
+	my $tpl_filename = $self->{tl_tpath}.'/'.$self->{tl_template}.".tpl.html";
+	my $tpl = $self->lc_read($tpl_filename);
 
-	$this->raise_error("Template file not found") unless($tpl);
+	$self->raise_error("Template file not found") unless($tpl);
 
 	my @block = ($tpl =~ m/(<{block}>(.+)<{\/block}>)/is);
 	unless($block[0])
 	{
-		$this->raise_error("Wrong template format: no <{block}><{/block}> tags");
+		$self->raise_error("Wrong template format: no <{block}><{/block}> tags");
 	}
 	else
 	{
@@ -386,24 +407,24 @@ sub build_links
 
 		if ($blockT !~ /<{head_block}>/)
 		{
-			$this->raise_error("Wrong template format: no <{head_block}> tag.");
+			$self->raise_error("Wrong template format: no <{head_block}> tag.");
 		}
 		if ($blockT !~ /<{\/head_block}>/)
 		{
-			$this->raise_error("Wrong template format: no <{/head_block}> tag.");
+			$self->raise_error("Wrong template format: no <{/head_block}> tag.");
 		}
 
 		if ($blockT !~ /<{link}>/)
 		{
-			$this->raise_error("Wrong template format: no <{link}> tag.");
+			$self->raise_error("Wrong template format: no <{link}> tag.");
 		}
 		if ($blockT !~ /<{text}>/)
 		{
-			$this->raise_error("Wrong template format: no <{text}> tag.");
+			$self->raise_error("Wrong template format: no <{text}> tag.");
 		}
 		if ($blockT !~ /<{host}>/)
 		{
-			$this->raise_error("Wrong template format: no <{host}> tag.");
+			$self->raise_error("Wrong template format: no <{host}> tag.");
 		}
 
 		my $text;
@@ -411,18 +432,18 @@ sub build_links
 		{
 			if (ref($link) ne "HASH")
 			{
-				$this->raise_error("link must be an array");
+				$self->raise_error("link must be an array");
 			}
 			elsif ($link->{url} eq "" || $link->{text} eq "")
 			{
-				$this->raise_error("format of link must be an hash('anchor'=>\$anchor,'url'=>\$url,'text'=>\$text)");
+				$self->raise_error("format of link must be an hash('anchor'=>\$anchor,'url'=>\$url,'text'=>\$text)");
 			}
 			else
 			{
 				my $host = lc(URI->new($link->{url})->host);
 				if(!$host)
 				{
-					$this->raise_error("wrong format of url: ".$link->{url});
+					$self->raise_error("wrong format of url: ".$link->{url});
 				}
 				else
 				{
@@ -430,7 +451,7 @@ sub build_links
 
 					if ($level < 1)
 					{
-						$this->raise_error("wrong host: $host in url $link->{url}");
+						$self->raise_error("wrong host: $host in url $link->{url}");
 					}
 					else
 					{
@@ -462,21 +483,21 @@ sub build_links
 			$result .= $tpl;
 		}
 	}
-	if ($this->{tl_links}->{__trustlink_end__} ne '' && ((any {$_ eq $this->{remote_addr}} @{$this->{tl_links}->{__trustlink_robots__}}) || $this->{tl_force_show_code}))
+	if ($self->{tl_links}->{__trustlink_end__} ne '' && ((any {$_ eq $self->{remote_addr}} @{$self->{tl_links}->{__trustlink_robots__}}) || $self->{tl_force_show_code}))
 	{
-		$result .= $this->{tl_links}->{__trustlink_end__};
+		$result .= $self->{tl_links}->{__trustlink_end__};
 	}
 
-	if ($this->{tl_test} == 1 && $this->{tl_isrobot} != 1)
+	if ($self->{tl_test} == 1 && $self->{tl_isrobot} != 1)
 	{
 		$result = '<noindex>'.$result.'</noindex>';
 	}
 
 	# Вывод ошибок деал тут потому что они вообще не выводились никак
-	if (scalar @{$this->{tl_error}} > 0 && $this->{tl_debug} == 1)
+	if (scalar @{$self->{tl_error}} > 0 && $self->{tl_debug} == 1)
 	{
 		$result .= "\n<!-- ERRORS:\n";
-		foreach(@{$this->{tl_error}})
+		foreach(@{$self->{tl_error}})
 		{
 			$result .= $_."\n";
 		}
@@ -497,6 +518,7 @@ sub var_dump
 
 sub rawurldecode
 {
+	my $self = shift;
 	my $s = shift;
 	$s =~ s/\%([A-Fa-f0-9]{2})/pack('C', hex($1))/seg;
 	return $s;
